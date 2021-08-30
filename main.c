@@ -1,8 +1,10 @@
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdatomic.h>
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <pthread.h>
 
 #define GL_GLEXT_PROTOTYPES
 #include <GL/gl.h>
@@ -33,6 +35,11 @@ typedef struct app_t {
 	size_t cube_count;
 	chunk_t chunks[8][8][8];
 } app_t;
+
+typedef struct chunk_thread_t {
+	chunk_t *chunk;
+	int32_t x, y, z;
+} chunk_thread_t;
 
 void chunk_gen(chunk_t *self, int32_t x, int32_t y, int32_t z) {
 	struct osn_context *ons;
@@ -71,9 +78,6 @@ void chunk_gen(chunk_t *self, int32_t x, int32_t y, int32_t z) {
 	bool eating = false;
 
 	self->to_draw_count = 0;
-
-	voxel_t tmp_pool[64][64][64];
-	size_t counts[64][64];
 
 	for (int32_t i = 0; i < 64; i++) {
 		for (int32_t j = 0; j < 64; j++) {
@@ -114,11 +118,15 @@ void chunk_gen(chunk_t *self, int32_t x, int32_t y, int32_t z) {
 		}
 	}
 
-	static size_t draw_count = 0;
+	static atomic_size_t draw_count = 0;
 	draw_count += self->to_draw_count;
 
 	fprintf(stderr, "draw count: %lu\n", draw_count);
 
+	self->lod = 0;
+}
+
+void chunk_load(chunk_t *self) {
 	glGenVertexArrays(1, &self->vao);
 	glBindVertexArray(self->vao);
 
@@ -164,8 +172,13 @@ void chunk_gen(chunk_t *self, int32_t x, int32_t y, int32_t z) {
 	glVertexAttribDivisor(2, 1);
 	glEnableVertexAttribArray(1);
 	glEnableVertexAttribArray(2);
+}
 
-	self->lod = 0;
+void *chunk_thread(void *ptr) {
+	chunk_thread_t *thread_info = (chunk_thread_t *) ptr;
+	fprintf(stderr, "generating %d %d %d\n", thread_info->x, thread_info->y, thread_info->z);
+	chunk_gen(thread_info->chunk, thread_info->x, thread_info->y, thread_info->z);
+	pthread_exit(NULL);
 }
 
 void chunk_set_lod(chunk_t *self, size_t lod) {
@@ -255,10 +268,26 @@ void app_setup(app_t *self) {
 
 	glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 
+	pthread_t threads[4][4][4];
+	chunk_thread_t thread_infos[4][4][4];
+
 	for (int32_t i = 0; i < 4; i++)
 		for(int32_t j = 0; j < 4; j++)
 			for(int32_t k = 0; k < 4; k++) {
-		chunk_gen(self->chunks[i][j]+k, i, j, k);
+		thread_infos[i][j][k] = (chunk_thread_t){
+			.chunk = self->chunks[i][j]+k,
+			.x = i,
+			.y = j,
+			.z = k
+		};
+		pthread_create(threads[i][j]+k, NULL, chunk_thread, thread_infos[i][j]+k);
+	}
+
+	for (int32_t i = 0; i < 4; i++)
+		for(int32_t j = 0; j < 4; j++)
+			for(int32_t k = 0; k < 4; k++) {
+		pthread_join(threads[i][j][k], NULL);
+		chunk_load(self->chunks[i][j]+k);
 	}
 
 	unsigned int vs = glCreateShader(GL_VERTEX_SHADER);
@@ -347,6 +376,6 @@ bool app_loop(app_t *self) {
 }
 
 int main() {
-	app_t *app = malloc(sizeof(app_t));
-	for (app_setup(app);app_loop(app););
+	static app_t app = {0};
+	for (app_setup(&app);app_loop(&app););
 }

@@ -72,6 +72,9 @@ void chunk_gen(chunk_t *self, int32_t x, int32_t y, int32_t z) {
 
 	self->to_draw_count = 0;
 
+	voxel_t tmp_pool[64][64][64];
+	size_t counts[64][64];
+
 	for (int32_t i = 0; i < 64; i++) {
 		for (int32_t j = 0; j < 64; j++) {
 			for (int32_t k = 0; k < 64; k++) {
@@ -99,7 +102,22 @@ void chunk_gen(chunk_t *self, int32_t x, int32_t y, int32_t z) {
 
 	/* greedy 2d */
 
-	fprintf(stderr, "draw count: %lu\n", self->to_draw_count);
+	for (int32_t i = 0; i < (self->to_draw_count - 1); i++) {
+		voxel_t *a = self->to_draw+i;
+		voxel_t *b = self->to_draw+i+1;
+		while (a->scale_z == b->scale_z && a->z == b->z && a->x == b->x) {
+			a->scale_y++;
+			self->to_draw_count--;
+			*b = self->to_draw[self->to_draw_count];
+			b++;
+			i++;
+		}
+	}
+
+	static size_t draw_count = 0;
+	draw_count += self->to_draw_count;
+
+	fprintf(stderr, "draw count: %lu\n", draw_count);
 
 	glGenVertexArrays(1, &self->vao);
 	glBindVertexArray(self->vao);
@@ -189,7 +207,7 @@ char const *vs_src = ""
 "layout (location = 0) uniform mat4 v;"
 "void main() {"
 	"gl_Position =  p * v * vec4((in_pos * scale.xyz + offset.xyz) * vec3(0.1), 1.0);"
-	"out_col = vec4(in_pos * scale.xyz / 64.0, 0.0);"
+	"out_col = vec4(in_pos, 0.0);"
 	"out_col.w = ((offset.w >>  0) & 0xff) / 256.0;"
 "}";
 
@@ -237,70 +255,9 @@ void app_setup(app_t *self) {
 
 	glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 
-/*	unsigned int i_pos_vbo = buffers[2];
-	glBindBuffer(GL_ARRAY_BUFFER, i_pos_vbo);
-
-	static int32_t cube_pos[256][256][256][4];
-
-	struct osn_context *ons;
-	struct osn_context *ons_r;
-	struct osn_context *ons_g;
-	struct osn_context *ons_b;
-	open_simplex_noise(0, &ons);
-	open_simplex_noise(1, &ons_r);
-	open_simplex_noise(2, &ons_g);
-	open_simplex_noise(3, &ons_b);
-
-	for (size_t i = 0; i < 256; i++) {
-		for (size_t j = 0; j < 256; j++) {
-			for (size_t k = 0; k < 256; k++) {
-				cube_pos[i][j][k][0] = i;
-				cube_pos[i][j][k][1] = j;
-				cube_pos[i][j][k][2] = k;
-				cube_pos[i][j][k][3] = open_simplex_noise3(ons, i / 32.0, j / 32.0, k / 32.0)>0?0xff:0x00;
-				cube_pos[i][j][k][3] |= 0x01000000 * ((uint8_t)((open_simplex_noise3(ons_r, i / 32.0, j / 32.0, k / 32.0) + 1) * 128.0));
-				cube_pos[i][j][k][3] |= 0x00010000 * ((uint8_t)((open_simplex_noise3(ons_g, i / 32.0, j / 32.0, k / 32.0) + 1) * 128.0));
-				cube_pos[i][j][k][3] |= 0x00000100 * ((uint8_t)((open_simplex_noise3(ons_b, i / 32.0, j / 32.0, k / 32.0) + 1) * 128.0));
-			}
-		}
-	}
-
-	self->cube_count = 0;
-	static int32_t ncube_pos[256 * 256 * 256 * 4];
-
-	for (size_t i = 0; i < 256; i++) {
-		for (size_t j = 0; j < 256; j++) {
-			for (size_t k = 0; k < 256; k++) {
-				uint32_t me = cube_pos[i][j][k][3];
-				uint32_t t = (k != 255)?cube_pos[i][j][k + 1][3]&0xff:0;
-				uint32_t b = (k != 0)?cube_pos[i][j][k - 1][3]&0xff:0;
-				uint32_t n = (j != 255)?cube_pos[i][j + 1][k][3]&0xff:0;
-				uint32_t s = (j != 0)?cube_pos[i][j - 1][k][3]&0xff:0;
-				uint32_t e = (i != 255)?cube_pos[i + 1][j][k][3]&0xff:0;
-				uint32_t w = (i != 0)?cube_pos[i - 1][j][k][3]&0xff:0;
-				if (me && (!t || !b || !n || !s || !e || !w)) {
-					ncube_pos[self->cube_count * 4 + 0] = cube_pos[i][j][k][0];
-					ncube_pos[self->cube_count * 4 + 1] = cube_pos[i][j][k][1];
-					ncube_pos[self->cube_count * 4 + 2] = cube_pos[i][j][k][2];
-					ncube_pos[self->cube_count * 4 + 3] = cube_pos[i][j][k][3];
-					self->cube_count++;
-				}
-			}
-		}
-	}
-
-	printf("count: %lu\n", self->cube_count);
-
-	glNamedBufferData(i_pos_vbo, sizeof(int32_t) * 4 * self->cube_count, ncube_pos, GL_STATIC_DRAW);
-	glVertexAttribIPointer(1, 4, GL_INT, 4 * sizeof(int32_t), NULL);
-	glVertexAttribDivisor(1, 1);
-	glEnableVertexAttribArray(1);
-
-*/
-
-	for (int32_t i = 0; i < 8; i++)
-		for(int32_t j = 0; j < 8; j++)
-			for(int32_t k = 0; k < 8; k++) {
+	for (int32_t i = 0; i < 4; i++)
+		for(int32_t j = 0; j < 4; j++)
+			for(int32_t k = 0; k < 4; k++) {
 		chunk_gen(self->chunks[i][j]+k, i, j, k);
 	}
 
@@ -333,9 +290,9 @@ bool app_loop(app_t *self) {
 
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-	for (int32_t i = 0; i < 8; i++)
-		for(int32_t j = 0; j < 8; j++)
-			for(int32_t k = 0; k < 8; k++) {
+	for (int32_t i = 0; i < 4; i++)
+		for(int32_t j = 0; j < 4; j++)
+			for(int32_t k = 0; k < 4; k++) {
 		chunk_draw(self->chunks[i][j]+k);
 	}
 

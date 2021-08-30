@@ -4,7 +4,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-#include <epoxy/gl.h>
+#define GL_GLEXT_PROTOTYPES
+#include <GL/gl.h>
 #include <GLFW/glfw3.h>
 
 #include "simplex.h"

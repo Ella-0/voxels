@@ -6,22 +6,21 @@
 #include <stdio.h>
 #include <pthread.h>
 
+#include <string.h>
+
 #define GL_GLEXT_PROTOTYPES
 #include <GL/gl.h>
 #include <GLFW/glfw3.h>
 
 #include "simplex.h"
+#include "voct.h"
 
-typedef struct voxel_t {
-	int32_t x, y, z;
-	uint32_t col;
-	int32_t scale_x, scale_y, scale_z;
-	uint32_t id;
-} voxel_t;
+#define MAX_TO_DRAW (128*128*128)
 
 typedef struct chunk_t {
-	voxel_t voxels[64][64][64];
-	voxel_t to_draw[64 * 64 * 64];
+	voxel_cache_t cache;
+	voct_node_t tree;
+	voxel_t to_draw[MAX_TO_DRAW];
 	size_t to_draw_count;
 	unsigned int cube_ebo;
 	unsigned int cube_vbo;
@@ -42,86 +41,40 @@ typedef struct chunk_thread_t {
 } chunk_thread_t;
 
 void chunk_gen(chunk_t *self, int32_t x, int32_t y, int32_t z) {
-	struct osn_context *ons;
-	struct osn_context *ons_r;
-	struct osn_context *ons_g;
-	struct osn_context *ons_b;
-	open_simplex_noise(0, &ons);
-	open_simplex_noise(1, &ons_r);
-	open_simplex_noise(2, &ons_g);
-	open_simplex_noise(3, &ons_b);
+	voxel_cache_new(&self->cache);
+	self->tree.depth = 8;
+	self->tree.is_leaf = false;
+	memset(self->tree.children, 0, sizeof(self->tree.children));
 
-	for (int32_t i = 0; i < 64; i++) {
-		for (int32_t j = 0; j < 64; j++) {
-			for (int32_t k = 0; k < 64; k++) {
-				int32_t off_x = i + x * 64;
-				int32_t off_y = j + y * 64;
-				int32_t off_z = k + z * 64;
-				self->voxels[i][j][k].x = off_x;
-				self->voxels[i][j][k].y = off_y;
-				self->voxels[i][j][k].z = off_z;
-				self->voxels[i][j][k].col = open_simplex_noise3(ons, (off_x) / 32.0, (off_y) / 32.0, (off_z) / 32.0)>0?0xff:0x00;
-				self->voxels[i][j][k].col |= 0x01000000 * ((uint8_t)((open_simplex_noise3(ons_r, (off_x) / 32.0, (off_y) / 32.0, (off_z) / 32.0) + 1) * 128.0));
-				self->voxels[i][j][k].col |= 0x00010000 * ((uint8_t)((open_simplex_noise3(ons_g, (off_x) / 32.0, (off_y) / 32.0, (off_z) / 32.0) + 1) * 128.0));
-				self->voxels[i][j][k].col |= 0x00000100 * ((uint8_t)((open_simplex_noise3(ons_b, (off_x) / 32.0, (off_y) / 32.0, (off_z) / 32.0) + 1) * 128.0));
-				self->voxels[i][j][k].scale_x = 1;
-				self->voxels[i][j][k].scale_y = 1;
-				self->voxels[i][j][k].scale_z = 1;
+	struct osn_context *simplex;
+	open_simplex_noise(1, &simplex);
+
+	size_t voxel_count = 0;
+
+	for (int32_t i = 0; i < 256; i++) {
+		for (int32_t j = 0; j < 256; j++) {
+			for (int32_t k = 0; k < 256; k++) {
+				int32_t off_x = i;
+				int32_t off_y = j;
+				int32_t off_z = k;
+				if (open_simplex_noise3(simplex, off_x / 32.0f, off_y / 32.0f, off_z / 32.0f) > 0)
+					voxel_set(&self->cache, &self->tree, &self->tree, off_x, off_y, off_z), voxel_count++;
 			}
 		}
 	}
 
-	/* greedy 1d */
-
-	int32_t greedy_x, greedy_y, greedy_z;
-
-	bool eating = false;
-
-	self->to_draw_count = 0;
-
-	for (int32_t i = 0; i < 64; i++) {
-		for (int32_t j = 0; j < 64; j++) {
-			for (int32_t k = 0; k < 64; k++) {
-				uint32_t me = self->voxels[i][j][k].col&0xff;
-				if (!eating && me) {
-					greedy_x = i;
-					greedy_y = j;
-					greedy_z = k;
-					eating = true;
-				} else if (eating && !me) {
-					eating = false;
-					self->to_draw[self->to_draw_count] = self->voxels[greedy_x][greedy_y][greedy_z];
-					self->to_draw[self->to_draw_count].scale_z = k - greedy_z;
-					self->to_draw_count++;
-				}
-			}
-			if (eating) {
-				eating = false;
-				self->to_draw[self->to_draw_count] = self->voxels[greedy_x][greedy_y][greedy_z];
-				self->to_draw[self->to_draw_count].scale_z = 64 - greedy_z;
-				self->to_draw_count++;
-			}
+	for (size_t i = 0; i < VOXEL_CACHE_SIZE && self->to_draw_count < MAX_TO_DRAW; i++) {
+		if (self->cache.ptr[i].scale) {
+			self->to_draw[self->to_draw_count] = self->cache.ptr[i];
+			self->to_draw_count++;
 		}
 	}
 
-	/* greedy 2d */
+	// dump_tree(&self->tree);
 
-	for (int32_t i = 0; i < (self->to_draw_count - 1); i++) {
-		voxel_t *a = self->to_draw+i;
-		voxel_t *b = self->to_draw+i+1;
-		while (a->scale_z == b->scale_z && a->z == b->z && a->x == b->x) {
-			a->scale_y++;
-			self->to_draw_count--;
-			*b = self->to_draw[self->to_draw_count];
-			b++;
-			i++;
-		}
-	}
-
-	static atomic_size_t draw_count = 0;
-	draw_count += self->to_draw_count;
-
-	fprintf(stderr, "draw count: %lu\n", draw_count);
+	fprintf(stderr, "voxel_count: %lu\n", voxel_count);
+	fprintf(stderr, "to_draw_count: %lu\n", self->to_draw_count);
+	fprintf(stderr, "ring_pos: %lu\n", self->cache.ring_index);
 
 	self->lod = 0;
 }
@@ -165,13 +118,11 @@ void chunk_load(chunk_t *self) {
 	self->off_vbo = buffers[2];
 	glBindBuffer(GL_ARRAY_BUFFER, self->off_vbo);
 	glNamedBufferData(self->off_vbo, sizeof(voxel_t) * self->to_draw_count, self->to_draw, GL_STATIC_DRAW);
+	//glNamedBufferData(self->off_vbo, sizeof(voxel_t) * VOXEL_CACHE_SIZE, self->cache.ptr, GL_STATIC_DRAW);
 
 	glVertexAttribIPointer(1, 4, GL_INT, sizeof(voxel_t), NULL);
-	glVertexAttribIPointer(2, 4, GL_INT, sizeof(voxel_t), (void*)(sizeof(int32_t) * 4));
 	glVertexAttribDivisor(1, 1);
-	glVertexAttribDivisor(2, 1);
 	glEnableVertexAttribArray(1);
-	glEnableVertexAttribArray(2);
 }
 
 void *chunk_thread(void *ptr) {
@@ -203,13 +154,13 @@ void chunk_draw(chunk_t const *self) {
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self->cube_ebo);
 
 	glDrawElementsInstanced(GL_TRIANGLE_STRIP, 14, GL_UNSIGNED_INT, NULL, self->to_draw_count);
+	//glDrawElementsInstanced(GL_TRIANGLE_STRIP, 14, GL_UNSIGNED_INT, NULL, 64 * 64 * 64);
 }
 
 char const *vs_src = ""
 "#version 460 core\n"
 "layout (location = 0) in vec3 in_pos;"
 "layout (location = 1) in ivec4 offset;"
-"layout (location = 2) in ivec4 scale;"
 "layout (location = 0) out vec4 out_col;"
 "mat4 p = mat4("
 	"1.42814, 0, 0, 0,"
@@ -219,7 +170,7 @@ char const *vs_src = ""
 ");"
 "layout (location = 0) uniform mat4 v;"
 "void main() {"
-	"gl_Position =  p * v * vec4((in_pos * scale.xyz + offset.xyz) * vec3(0.1), 1.0);"
+	"gl_Position =  p * v * vec4((in_pos * offset.w + offset.xyz) * vec3(0.1), 1.0);"
 	"out_col = vec4(in_pos, 0.0);"
 	"out_col.w = ((offset.w >>  0) & 0xff) / 256.0;"
 "}";
@@ -268,12 +219,12 @@ void app_setup(app_t *self) {
 
 	glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 
-	pthread_t threads[4][4][4];
-	chunk_thread_t thread_infos[4][4][4];
+	pthread_t threads[8][8][8];
+	chunk_thread_t thread_infos[8][8][8];
 
-	for (int32_t i = 0; i < 4; i++)
-		for(int32_t j = 0; j < 4; j++)
-			for(int32_t k = 0; k < 4; k++) {
+	for (int32_t i = 0; i < 1; i++)
+		for(int32_t j = 0; j < 1; j++)
+			for(int32_t k = 0; k < 1; k++) {
 		thread_infos[i][j][k] = (chunk_thread_t){
 			.chunk = self->chunks[i][j]+k,
 			.x = i,
@@ -283,9 +234,9 @@ void app_setup(app_t *self) {
 		pthread_create(threads[i][j]+k, NULL, chunk_thread, thread_infos[i][j]+k);
 	}
 
-	for (int32_t i = 0; i < 4; i++)
-		for(int32_t j = 0; j < 4; j++)
-			for(int32_t k = 0; k < 4; k++) {
+	for (int32_t i = 0; i < 1; i++)
+		for(int32_t j = 0; j < 1; j++)
+			for(int32_t k = 0; k < 1; k++) {
 		pthread_join(threads[i][j][k], NULL);
 		chunk_load(self->chunks[i][j]+k);
 	}
@@ -319,9 +270,9 @@ bool app_loop(app_t *self) {
 
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-	for (int32_t i = 0; i < 4; i++)
-		for(int32_t j = 0; j < 4; j++)
-			for(int32_t k = 0; k < 4; k++) {
+	for (int32_t i = 0; i < 1; i++)
+		for(int32_t j = 0; j < 1; j++)
+			for(int32_t k = 0; k < 1; k++) {
 		chunk_draw(self->chunks[i][j]+k);
 	}
 
@@ -376,6 +327,6 @@ bool app_loop(app_t *self) {
 }
 
 int main() {
-	static app_t app = {0};
-	for (app_setup(&app);app_loop(&app););
+	app_t *app = malloc(sizeof(app_t));
+	for (app_setup(app);app_loop(app););
 }

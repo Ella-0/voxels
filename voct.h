@@ -7,10 +7,22 @@ typedef enum block_t {
 	BLOCK_RAINBOW_BARF = 1,
 } block_t;
 
+
+typedef enum block_flags_t {
+	BLOCK_FLAG_EXISTS=(1 << 0),
+	BLOCK_FLAG_HIDDEN=(1 << 1),
+} block_flags_t;
+
 typedef struct voxel_t {
 	int32_t x;
 	int32_t y;
 	int32_t z;
+
+	/* first 8 bits x shift
+	 * second 8 bits y shift
+	 * third 8 bits z shift
+	 * fourth 8 bits are block flags
+	 */
 	uint32_t scale;
 } voxel_t;
 
@@ -48,3 +60,6 @@ voct_node_t *voxel_new(voxel_cache_t *cache, voct_node_t *root, uint32_t x, uint
 void voxel_set(voxel_cache_t *cache, voct_node_t *root, voct_node_t *tree, uint32_t x, uint32_t y, uint32_t z);
 
 void dump_tree(voct_node_t *tree);
+
+void voxel_set_visible(voct_node_t *root, voct_node_t *tree);
+void voxel_greedy(voct_node_t *tree);

@@ -50,16 +50,31 @@ voxel_t *voxel_cache_push(voxel_cache_t *cache, voct_node_t *root) {
 	return ret;
 }
 
+static inline uint32_t uniform_scale(uint8_t depth, block_flags_t flags) {
+	return depth << 24 | depth << 16 | depth << 8 | flags;
+}
+
+
+static inline uint8_t get_scale_x(uint32_t val) {
+	return (val >> 24) & 0xff;
+}
+static inline uint8_t get_scale_y(uint32_t val) {
+	return (val >> 16) & 0xff;
+}
+static inline uint8_t get_scale_z(uint32_t val) {
+	return (val >>  8) & 0xff;
+}
+
 voct_node_t *voxel_new(voxel_cache_t *cache, voct_node_t *root, uint32_t x, uint32_t y, uint32_t z, uint8_t depth) {
 	voct_node_t *ret = calloc(1, sizeof(*ret));
 	ret->is_leaf = true;
 	ret->depth = depth;
 	ret->voxel = voxel_cache_push(cache, root);
-	ret->voxel->scale = 1 << depth;
+	ret->voxel->scale = uniform_scale(depth, BLOCK_FLAG_EXISTS);
 	/* fix voxel to the grid */
-	ret->voxel->x = x & ~((ret->voxel->scale << 1) - 1);
-	ret->voxel->y = y & ~((ret->voxel->scale << 1) - 1);
-	ret->voxel->z = z & ~((ret->voxel->scale << 1) - 1);
+	ret->voxel->x = x & ~((1 << depth << 1) - 1);
+	ret->voxel->y = y & ~((1 << depth << 1) - 1);
+	ret->voxel->z = z & ~((1 << depth << 1) - 1);
 	return ret;
 }
 
@@ -67,7 +82,7 @@ void voxel_set(voxel_cache_t *cache, voct_node_t *root, voct_node_t *tree, uint3
 	if (!tree->depth) {
 		tree->is_leaf = true;
 		tree->voxel = voxel_cache_push(cache, root);
-		tree->voxel->scale = 1;
+		tree->voxel->scale = uniform_scale(0, 0);
 		tree->voxel->x = x;
 		tree->voxel->y = y;
 		tree->voxel->z = z;
@@ -80,7 +95,6 @@ void voxel_set(voxel_cache_t *cache, voct_node_t *root, voct_node_t *tree, uint3
 	}
 
 	/* select a child */
-
 	voct_node_t **child = &tree->children[x>>(tree->depth - 1) & 1][y>>(tree->depth - 1) & 1][z>>(tree->depth - 1) & 1];
 
 	/* selected child not generated so must generate it */
@@ -94,6 +108,9 @@ void voxel_set(voxel_cache_t *cache, voct_node_t *root, voct_node_t *tree, uint3
 
 	voxel_set(cache, root, *child, x, y, z);
 
+	/* if all children are leaf nodes, current node can become a leaf node by
+	 * sacrificing children
+	 */
 	bool all_leaf = true;
 	for (uint8_t i = 0; all_leaf && i < 8; i++) {
 	 	voct_node_t *child = tree->children[(i&4) >> 2][(i&2) >> 1][i&1];
@@ -112,12 +129,111 @@ void voxel_set(voxel_cache_t *cache, voct_node_t *root, voct_node_t *tree, uint3
 
 		tree->is_leaf = true;
 		tree->voxel = voxel_cache_push(cache, root);
-		tree->voxel->scale = 1 << tree->depth;
+		tree->voxel->scale = uniform_scale(tree->depth, BLOCK_FLAG_EXISTS);
 
 		/* fix voxel to the grid */
-		tree->voxel->x = x & ~((tree->voxel->scale) - 1);
-		tree->voxel->y = y & ~((tree->voxel->scale) - 1);
-		tree->voxel->z = z & ~((tree->voxel->scale) - 1);
+		tree->voxel->x = x & ~((1 << tree->depth) - 1);
+		tree->voxel->y = y & ~((1 << tree->depth) - 1);
+		tree->voxel->z = z & ~((1 << tree->depth) - 1);
+	}
+}
+
+voxel_t *voxel_find(voct_node_t *tree, uint8_t max_depth, uint32_t x, uint32_t y, uint32_t z) {
+	if (!tree) {
+		return NULL;
+	}
+
+	if (tree->is_leaf) {
+		return tree->voxel;
+	}
+
+	if (tree->depth > max_depth) {
+		voct_node_t *child = tree->children[x>>(tree->depth - 1) & 1][y>>(tree->depth - 1) & 1][z>>(tree->depth - 1) & 1];
+		return voxel_find(child, max_depth, x, y, z);
+	} else {
+		return NULL;
+	}
+}
+
+void voxel_set_visible(voct_node_t *root, voct_node_t *tree) {
+	if (!tree) {
+		return;
+	}
+
+	if (tree->is_leaf) {
+		uint32_t offset = 1 << tree->depth;
+
+		if (!voxel_find(root, tree->depth, tree->voxel->x + offset, tree->voxel->y, tree->voxel->z))
+			return;
+
+		if (!voxel_find(root, tree->depth, tree->voxel->x, tree->voxel->y + offset, tree->voxel->z))
+			return;
+
+		if (!voxel_find(root, tree->depth, tree->voxel->x, tree->voxel->y, tree->voxel->z + offset))
+			return;
+
+		if (tree->voxel->x == 0 ||
+			!voxel_find(root, tree->depth, tree->voxel->x - offset, tree->voxel->y, tree->voxel->z))
+			return;
+
+		if (tree->voxel->y == 0 ||
+			!voxel_find(root, tree->depth, tree->voxel->x, tree->voxel->y - offset, tree->voxel->z))
+			return;
+
+		if (tree->voxel->z == 0 ||
+			!voxel_find(root, tree->depth, tree->voxel->x, tree->voxel->y, tree->voxel->z - offset))
+			return;
+
+		tree->voxel->scale |= BLOCK_FLAG_HIDDEN;
+
+	} else {
+		for (uint8_t i = 0; i < 8; i++) {
+		 	voct_node_t *child = tree->children[(i&4) >> 2][(i&2) >> 1][i&1];
+		 	voxel_set_visible(root, child);
+		}
+	}
+}
+
+void voxel_greedy(voct_node_t *tree) {
+	if (!tree)
+		return;
+
+	if (tree->is_leaf)
+		return;
+
+
+	for (uint8_t i = 0; i < 2; i++) {
+		for (uint8_t j = 0; j < 2; j++) {
+			voct_node_t *child_a = tree->children[i][j][0];
+			voct_node_t *child_b = tree->children[i][j][1];
+
+			if (!child_a || !child_a->is_leaf) {
+				voxel_greedy(child_a);
+				continue;
+			}
+
+			if (!child_b || !child_b->is_leaf) {
+				voxel_greedy(child_a);
+				continue;
+			}
+
+			uint8_t scale_a_x = get_scale_x(child_a->voxel->scale);
+			uint8_t scale_b_x = get_scale_x(child_b->voxel->scale);
+
+			uint8_t scale_a_y = get_scale_y(child_a->voxel->scale);
+			uint8_t scale_b_y = get_scale_y(child_b->voxel->scale);
+
+			if (scale_a_x == scale_b_x && scale_a_y == scale_b_y) {
+				uint8_t scale_a_z = get_scale_z(child_a->voxel->scale);
+				uint8_t scale_b_z = get_scale_z(child_b->voxel->scale);
+				uint8_t scale_z = scale_a_z + scale_b_z;
+
+				child_a->voxel->scale = scale_a_x << 24 | scale_a_y << 16 | scale_a_z << 8 | BLOCK_FLAG_EXISTS;
+				child_b->voxel->scale = 0;
+
+				puts("here");
+			}
+		}
 	}
 }
 
@@ -139,43 +255,5 @@ void dump_tree(voct_node_t *tree) {
 	for (uint8_t i = 0; i < 8; i++) {
 	 	voct_node_t *child = tree->children[(i&4) >> 2][(i&2) >> 1][i&1];
 	 	dump_tree(child);
-	}
-}
-
-
-
-voxel_t *voxel_gen(voxel_cache_t *cache, voct_node_t *root, int32_t x, int32_t y, int32_t z, uint8_t depth) {
-	voxel_t *ret = voxel_cache_push(cache, root);
-	ret->x = x & (1 << (8 - depth));
-	ret->y = y & (1 << (8 - depth));
-	ret->z = z & (1 << (8 - depth));
-	ret->scale = 1 << (8 - depth);
-	return ret;
-}
-
-voxel_t *voxel_find(
-	voxel_cache_t *cache,
-	voct_node_t *root,
-	voct_node_t *tree,
-	int32_t x,
-	int32_t y,
-	int32_t z,
-	uint8_t depth
-) {
-	if (depth < 8) {
-		voct_node_t *child = tree->children
-			[((x>(tree->voxel->x + 1) << (7 - depth)))?1:0]
-			[((y>(tree->voxel->y + 1) << (7 - depth)))?1:0]
-			[((z>(tree->voxel->z + 1) << (7 - depth)))?1:0];
-
-		if (!child) {
-			child = malloc(sizeof(voct_node_t));
-			child->voxel = voxel_gen(cache, root, x, y, z, depth);
-			memset(child->children, 0, sizeof(child->children));
-		}
-
-		return voxel_find(cache, root, child, x, y, z, depth + 1);
-	} else {
-		return tree->voxel;
 	}
 }

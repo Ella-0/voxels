@@ -15,7 +15,7 @@
 #include "simplex.h"
 #include "voct.h"
 
-#define MAX_TO_DRAW (128*128*128)
+#define MAX_TO_DRAW (128*128*64)
 
 typedef struct chunk_t {
 	voxel_cache_t cache;
@@ -51,9 +51,9 @@ void chunk_gen(chunk_t *self, int32_t x, int32_t y, int32_t z) {
 
 	size_t voxel_count = 0;
 
-	for (int32_t i = 0; i < 256; i++) {
-		for (int32_t j = 0; j < 256; j++) {
-			for (int32_t k = 0; k < 256; k++) {
+	for (int32_t i = 0; i < 128; i++) {
+		for (int32_t j = 0; j < 128; j++) {
+			for (int32_t k = 0; k < 128; k++) {
 				int32_t off_x = i;
 				int32_t off_y = j;
 				int32_t off_z = k;
@@ -63,8 +63,13 @@ void chunk_gen(chunk_t *self, int32_t x, int32_t y, int32_t z) {
 		}
 	}
 
+	// voxel_set_visible(&self->tree, &self->tree);
+
+	// voxel_greedy(&self->tree);
+
 	for (size_t i = 0; i < VOXEL_CACHE_SIZE && self->to_draw_count < MAX_TO_DRAW; i++) {
-		if (self->cache.ptr[i].scale) {
+		block_flags_t flags = self->cache.ptr[i].scale & 0xff;
+		if (flags & BLOCK_FLAG_EXISTS && !(flags & BLOCK_FLAG_HIDDEN)) {
 			self->to_draw[self->to_draw_count] = self->cache.ptr[i];
 			self->to_draw_count++;
 		}
@@ -170,9 +175,12 @@ char const *vs_src = ""
 ");"
 "layout (location = 0) uniform mat4 v;"
 "void main() {"
-	"gl_Position =  p * v * vec4((in_pos * offset.w + offset.xyz) * vec3(0.1), 1.0);"
+	"uvec3 scale;"
+	"scale.x = 1 << (offset.w >> 24 & 0xff);"
+	"scale.y = 1 << (offset.w >> 16 & 0xff);"
+	"scale.z = 1 << (offset.w >>  8 & 0xff);"
+	"gl_Position =  p * v * vec4((in_pos * scale + offset.xyz) * vec3(0.1), 1.0);"
 	"out_col = vec4(in_pos, 0.0);"
-	"out_col.w = ((offset.w >>  0) & 0xff) / 256.0;"
 "}";
 
 char const * fs_src = ""
